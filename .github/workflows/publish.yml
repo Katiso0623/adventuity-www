@@ -1,0 +1,67 @@
+# Publishes www.adventuity.co.za: copies the Floodline website from Katiso0623/adventuity-hub (folder floodline/)
+# and deploys it to GitHub Pages. Runs on every push here, by hand (Run workflow), and every 30 minutes - the timed
+# runs publish only when the Floodline files changed (fingerprint compared with /site-version.txt on the live site).
+name: Publish www.adventuity.co.za
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '7,37 * * * *'
+    - cron: '23 4 1 * *'     # heartbeat: once a month, so GitHub keeps the timed runs switched on
+permissions:
+  contents: read
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.event.schedule != '23 4 1 * *'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Get the Floodline site from adventuity-hub
+        uses: actions/checkout@v4
+        with:
+          repository: Katiso0623/adventuity-hub
+          path: src
+          sparse-checkout: floodline
+          persist-credentials: false
+      - name: Has it changed since the last publish?
+        id: check
+        run: |
+          cd src/floodline
+          test -f index.html || { echo "::error::floodline/index.html not found in adventuity-hub"; exit 1; }
+          v=$(find . -type f ! -name site-version.txt -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)
+          echo "$v" > site-version.txt
+          live=$(curl -fsS --max-time 20 "https://www.adventuity.co.za/site-version.txt?t=$(date +%s)" 2>/dev/null | tr -d '[:space:]' || true)
+          echo "files: $v  live: ${live:-none}"
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$v" = "$live" ]; then echo "skip=1" >> "$GITHUB_OUTPUT"; echo "No change - nothing to publish."; fi
+      - name: Package the site
+        if: steps.check.outputs.skip != '1'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: src/floodline
+      - name: Publish to GitHub Pages
+        id: deploy
+        if: steps.check.outputs.skip != '1'
+        uses: actions/deploy-pages@v4
+  heartbeat:
+    if: github.event.schedule == '23 4 1 * *'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          date -u +%Y-%m-%d > .github/heartbeat
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/heartbeat
+          git commit -m "Monthly heartbeat (keeps the 30-minute publish check switched on)" && git push || echo "nothing to commit"
